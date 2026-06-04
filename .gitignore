@@ -7,4 +7,6 @@ __pycache__/
 venv/
 env/
 
-models/
+.idea/
+artifacts/
+data/
