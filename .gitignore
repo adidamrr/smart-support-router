@@ -4,9 +4,16 @@ __pycache__/
 .ipynb_checkpoints/
 
 .venv/
+.venv-airflow/
 venv/
 env/
 
 .idea/
 artifacts/
 data/
+
+airflow/*.db
+airflow/airflow.cfg
+airflow/logs/
+airflow/pid/
+airflow/webserver_config.py
