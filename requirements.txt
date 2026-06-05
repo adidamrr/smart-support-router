@@ -5,11 +5,13 @@ torch
 transformers
 datasets==3.6.0
 numpy
+pyarrow==20.0.0
 tqdm
 fastapi
 uvicorn
 sqlalchemy
 psycopg2-binary
 mlflow==3.1.4
+pyspark
 streamlit
 requests
