@@ -1,11 +1,10 @@
-import argparse
 import json
 from pathlib import Path
 from typing import Any, Optional, Union
 
 import torch
 import torch.nn as nn
-from templates import get_suggested_reply
+from .templates import get_suggested_reply
 from transformers import AutoTokenizer, DistilBertConfig, DistilBertModel
 
 
@@ -96,26 +95,3 @@ class IntentPredictor:
             "suggested_reply": get_suggested_reply(best_intent),
             "top_intents": top_intents,
         }
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run BANKING77 BERT intent inference.")
-    parser.add_argument("--text", required=True)
-    parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--artifacts-dir", type=Path, default=DEFAULT_ARTIFACTS_DIR)
-    parser.add_argument("--max-len", type=int, default=DEFAULT_MAX_LEN)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    predictor = IntentPredictor(
-        artifacts_dir=args.artifacts_dir,
-        max_len=args.max_len,
-    )
-    result = predictor.predict(args.text, top_k=args.top_k)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-
-
-if __name__ == "__main__":
-    main()
