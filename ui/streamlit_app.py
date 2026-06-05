@@ -19,7 +19,7 @@ def post_prediction(text: str) -> dict[str, Any]:
     return response.json()
 
 
-def get_history(limit: int = 20) -> list[dict[str, Any]]:
+def get_history(limit: int = 10) -> list[dict[str, Any]]:
     response = requests.get(
         f"{API_BASE_URL}/history",
         params={"limit": limit},
@@ -29,57 +29,103 @@ def get_history(limit: int = 20) -> list[dict[str, Any]]:
     return response.json()
 
 
+def format_confidence(confidence: float) -> str:
+    return f"{confidence:.2%}"
+
+
+def render_top_intents(top_intents: list[dict[str, Any]]) -> None:
+    if not top_intents:
+        return
+
+    with st.expander("Routing details"):
+        st.dataframe(
+            [
+                {
+                    "intent": item["intent"],
+                    "confidence": format_confidence(item["confidence"]),
+                }
+                for item in top_intents
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def render_history() -> None:
+    with st.sidebar:
+        st.header("Recent requests")
+        try:
+            history = get_history()
+        except requests.RequestException:
+            st.caption("History is unavailable right now.")
+            return
+
+        if not history:
+            st.caption("No recent requests yet.")
+            return
+
+        for item in history:
+            st.markdown(f"**{item['predicted_intent']}**")
+            st.caption(item["text"])
+            st.caption(format_confidence(item["confidence"]))
+            st.divider()
+
+
 st.set_page_config(page_title="Smart Support Router", layout="centered")
 
-st.title("Smart Support Router")
-st.caption(f"API: {API_BASE_URL}")
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "assistant",
+            "content": "Hi. Tell me what happened, and I will route your request to the right support team.",
+        }
+    ]
 
-text = st.text_area(
-    "Customer message",
-    placeholder="I cannot withdraw cash from the ATM",
-    height=140,
-)
+st.title("Smart Support")
+st.caption("Customer support assistant")
 
-predict_clicked = st.button("Predict", type="primary")
+render_history()
 
-if predict_clicked:
-    if not text.strip():
-        st.warning("Enter a customer message first.")
-    else:
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+        if "intent" in message:
+            col_intent, col_confidence = st.columns(2)
+            col_intent.metric("Intent", message["intent"])
+            col_confidence.metric("Confidence", format_confidence(message["confidence"]))
+            render_top_intents(message.get("top_intents", []))
+
+prompt = st.chat_input("Describe your issue")
+
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    with st.chat_message("user"):
+        st.write(prompt)
+
+    with st.chat_message("assistant"):
         try:
-            with st.spinner("Predicting intent..."):
-                result = post_prediction(text.strip())
+            with st.spinner("Checking your request..."):
+                result = post_prediction(prompt)
+        except requests.RequestException:
+            content = "Sorry, support routing is unavailable right now. Please try again later."
+            st.write(content)
+            st.session_state.messages.append({"role": "assistant", "content": content})
+        else:
+            content = result["suggested_reply"]
+            st.write(content)
 
-            st.subheader("Prediction")
-            st.metric("Intent", result["intent"])
-            st.metric("Confidence", f"{result['confidence']:.2%}")
+            col_intent, col_confidence = st.columns(2)
+            col_intent.metric("Intent", result["intent"])
+            col_confidence.metric("Confidence", format_confidence(result["confidence"]))
+            render_top_intents(result.get("top_intents", []))
 
-            st.subheader("Suggested Reply")
-            st.write(result["suggested_reply"])
-
-            st.subheader("Top Intents")
-            st.dataframe(
-                [
-                    {
-                        "intent": item["intent"],
-                        "confidence": f"{item['confidence']:.2%}",
-                    }
-                    for item in result.get("top_intents", [])
-                ],
-                use_container_width=True,
-                hide_index=True,
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "intent": result["intent"],
+                    "confidence": result["confidence"],
+                    "top_intents": result.get("top_intents", []),
+                }
             )
-        except requests.RequestException as exc:
-            st.error(f"Prediction API is unavailable: {exc}")
-
-st.divider()
-st.subheader("Recent Predictions")
-
-try:
-    history = get_history()
-    if history:
-        st.dataframe(history, use_container_width=True, hide_index=True)
-    else:
-        st.info("No prediction history yet.")
-except requests.RequestException as exc:
-    st.warning(f"Prediction history is unavailable: {exc}")
