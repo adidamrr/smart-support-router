@@ -4,6 +4,7 @@ import random
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,10 +12,12 @@ from data import load_banking77
 from sklearn.metrics import accuracy_score, classification_report, f1_score
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
-from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 
 
 MODEL_NAME = "distilbert-base-uncased"
+DATASET_NAME = "BANKING77"
+EPOCHS = 3
 DEFAULT_OUTPUT_DIR = "artifacts/bert"
 
 
@@ -37,9 +40,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fine-tune a BERT model")
     parser.add_argument("--max-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--scheduler", choices=["linear", "cosine"], default="linear")
     parser.add_argument("--output-dir", type=Path, default=Path(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -78,6 +81,26 @@ def create_dataloader(
     labels_tensor = torch.tensor(labels, dtype=torch.long)
     dataset = TensorDataset(input_ids, attention_mask, labels_tensor)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
+
+def create_scheduler(
+    scheduler_name: str,
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+) -> Any:
+    if scheduler_name == "linear":
+        return get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+
+    return get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps,
+    )
 
 
 def train_one_epoch(
@@ -175,10 +198,19 @@ def save_json(data: Any, path: Path) -> None:
         json.dump(data, file, ensure_ascii=False, indent=2)
 
 
+def log_mlflow_artifacts(output_dir: Path) -> None:
+    mlflow.log_artifact(str(output_dir / "metrics.json"))
+    mlflow.log_artifact(str(output_dir / "classification_report.json"))
+    mlflow.log_artifact(str(output_dir / "model.pt"))
+    mlflow.log_artifact(str(output_dir / "label_names.json"))
+    mlflow.log_artifacts(str(output_dir / "tokenizer"), artifact_path="tokenizer")
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    mlflow.set_experiment("smart-support-router")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -218,10 +250,11 @@ def main() -> None:
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
 
-    num_training_steps = len(train_loader) * args.epochs
+    num_training_steps = len(train_loader) * EPOCHS
     num_warmup_steps = int(0.1 * num_training_steps)
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
+    scheduler = create_scheduler(
+        scheduler_name=args.scheduler,
+        optimizer=optimizer,
         num_warmup_steps=num_warmup_steps,
         num_training_steps=num_training_steps,
     )
@@ -230,56 +263,92 @@ def main() -> None:
     best_metrics: dict[str, Any] = {}
     best_report: dict[str, Any] = {}
 
-    for epoch in range(1, args.epochs + 1):
-        train_metrics = train_one_epoch(
-            model=model,
-            train_loader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            device=device,
-        )
-        test_metrics, test_report = evaluate(
-            model=model,
-            data_loader=test_loader,
-            criterion=criterion,
-            device=device,
-            label_names=data.label_names,
-        )
-
-        print(f"\nEpoch {epoch}/{args.epochs}")
-        print(f"Train loss: {train_metrics['loss']:.4f}")
-        print(f"Train accuracy: {train_metrics['accuracy']:.4f}")
-        print(f"Train f1_macro: {train_metrics['f1_macro']:.4f}")
-        print(f"Test loss: {test_metrics['loss']:.4f}")
-        print(f"Test accuracy: {test_metrics['accuracy']:.4f}")
-        print(f"Test f1_macro: {test_metrics['f1_macro']:.4f}")
-
-        if test_metrics["f1_macro"] > best_test_f1:
-            best_test_f1 = test_metrics["f1_macro"]
-            torch.save(model.state_dict(), args.output_dir / "model.pt")
-            best_report = test_report
-            best_metrics = {
-                "best_test_accuracy": test_metrics["accuracy"],
-                "best_test_f1_macro": test_metrics["f1_macro"],
-                "best_test_loss": test_metrics["loss"],
-                "best_train_accuracy": train_metrics["accuracy"],
-                "best_train_f1_macro": train_metrics["f1_macro"],
-                "best_train_loss": train_metrics["loss"],
-                "best_epoch": epoch,
+    with mlflow.start_run():
+        mlflow.log_params(
+            {
                 "model_name": MODEL_NAME,
-                "max_len": args.max_len,
-                "batch_size": args.batch_size,
-                "epochs": args.epochs,
-                "lr": args.lr,
+                "dataset_name": DATASET_NAME,
+                "epochs": EPOCHS,
+                "learning_rate": args.lr,
                 "dropout": args.dropout,
-                "seed": args.seed,
+                "scheduler": args.scheduler,
             }
+        )
 
-    tokenizer.save_pretrained(args.output_dir / "tokenizer")
-    save_json(data.label_names, args.output_dir / "label_names.json")
-    save_json(best_metrics, args.output_dir / "metrics.json")
-    save_json(best_report, args.output_dir / "classification_report.json")
+        for epoch in range(1, EPOCHS + 1):
+            train_metrics = train_one_epoch(
+                model=model,
+                train_loader=train_loader,
+                criterion=criterion,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                device=device,
+            )
+            test_metrics, test_report = evaluate(
+                model=model,
+                data_loader=test_loader,
+                criterion=criterion,
+                device=device,
+                label_names=data.label_names,
+            )
+
+            print(f"\nEpoch {epoch}/{EPOCHS}")
+            print(f"Train loss: {train_metrics['loss']:.4f}")
+            print(f"Train accuracy: {train_metrics['accuracy']:.4f}")
+            print(f"Train f1_macro: {train_metrics['f1_macro']:.4f}")
+            print(f"Test loss: {test_metrics['loss']:.4f}")
+            print(f"Test accuracy: {test_metrics['accuracy']:.4f}")
+            print(f"Test f1_macro: {test_metrics['f1_macro']:.4f}")
+
+            mlflow.log_metrics(
+                {
+                    "train_loss": train_metrics["loss"],
+                    "train_accuracy": train_metrics["accuracy"],
+                    "train_f1_macro": train_metrics["f1_macro"],
+                    "test_loss": test_metrics["loss"],
+                    "test_accuracy": test_metrics["accuracy"],
+                    "test_f1_macro": test_metrics["f1_macro"],
+                },
+                step=epoch,
+            )
+
+            if test_metrics["f1_macro"] > best_test_f1:
+                best_test_f1 = test_metrics["f1_macro"]
+                torch.save(model.state_dict(), args.output_dir / "model.pt")
+                best_report = test_report
+                best_metrics = {
+                    "best_test_accuracy": test_metrics["accuracy"],
+                    "best_test_f1_macro": test_metrics["f1_macro"],
+                    "best_test_loss": test_metrics["loss"],
+                    "best_train_accuracy": train_metrics["accuracy"],
+                    "best_train_f1_macro": train_metrics["f1_macro"],
+                    "best_train_loss": train_metrics["loss"],
+                    "best_epoch": epoch,
+                    "model_name": MODEL_NAME,
+                    "dataset_name": DATASET_NAME,
+                    "max_len": args.max_len,
+                    "batch_size": args.batch_size,
+                    "epochs": EPOCHS,
+                    "lr": args.lr,
+                    "dropout": args.dropout,
+                    "scheduler": args.scheduler,
+                    "seed": args.seed,
+                }
+
+        tokenizer.save_pretrained(args.output_dir / "tokenizer")
+        save_json(data.label_names, args.output_dir / "label_names.json")
+        save_json(best_metrics, args.output_dir / "metrics.json")
+        save_json(best_report, args.output_dir / "classification_report.json")
+
+        mlflow.log_metrics(
+            {
+                "accuracy": best_metrics["best_test_accuracy"],
+                "f1_macro": best_metrics["best_test_f1_macro"],
+                "best_epoch": best_metrics["best_epoch"],
+                "test_loss": best_metrics["best_test_loss"],
+            }
+        )
+        log_mlflow_artifacts(args.output_dir)
 
     print(f"\nSaved best model and artifacts to: {args.output_dir}")
 
