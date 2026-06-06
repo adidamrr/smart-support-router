@@ -2,6 +2,8 @@
 
 Сервис поддержки банка: принимает текст клиента и определяет intent.
 
+![Интерфейс сервиса](docs/images/ui.png)
+
 Задача модели:
 
 ```text
@@ -34,7 +36,7 @@ docker compose up
 
 - интерфейс: http://localhost:8501
 - API: http://localhost:8000/docs
-- MLflow: http://localhost:5000
+- MLflow: http://localhost:5001
 
 Локальный запуск без Docker:
 
@@ -57,6 +59,16 @@ Spark-скрипт скачивает данные, чистит их и сох�
 ```bash
 python src/spark_preprocess.py
 ```
+
+## API
+
+API доступен по адресу:
+
+```text
+http://localhost:8000/docs
+```
+
+![FastAPI docs](docs/images/api.png)
 
 ## Модели
 
