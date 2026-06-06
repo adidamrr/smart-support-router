@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: smart_support_router
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d smart_support_router"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+    command: uvicorn src.api:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/smart_support_router
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts/bert:/app/artifacts/bert:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  streamlit:
+    build:
+      context: .
+    command: streamlit run ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
+  mlflow:
+    build:
+      context: .
+    command: mlflow ui --host 0.0.0.0 --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns
+
+volumes:
+  postgres_data:
